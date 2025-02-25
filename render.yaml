@@ -8,9 +8,6 @@ services:
       - key: HOST
         value: 0.0.0.0
       - key: PORT
-        fromService:
-          type: web
-          name: smtp-server
-          envVarKey: PORT
+        value: 2525
       - key: SMTP_PORT
         value: 2525
