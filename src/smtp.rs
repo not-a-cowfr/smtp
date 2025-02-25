@@ -2,9 +2,10 @@ use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}};
 use std::{env::var, error::Error};
 
 pub async fn start_smtp() -> Result<(), Box<dyn Error>> {
-    let bind_address = var("HOST").unwrap_or("0.0.0.0".to_string());
+    let bind_address = var("BIND_ADDRESS").unwrap_or("0.0.0.0".to_string());
     let smtp_port = var("SMTP_PORT").unwrap_or("2525".to_string());
-    
+    let smtp_domain = var("SMTP_DOMAIN").unwrap_or("smtp.notacow.fr".to_string());
+
     let listener = TcpListener::bind(format!("{}:{}", bind_address, smtp_port)).await?;
     println!("Starting smtp server at {}:{}", bind_address, smtp_port);
 
@@ -12,15 +13,14 @@ pub async fn start_smtp() -> Result<(), Box<dyn Error>> {
         let (stream, addr) = listener.accept().await?;
         println!("New connection from: {}", addr);
 
+        let domain = smtp_domain.clone();
         tokio::spawn(async move {
-            if let Err(e) = handle_smtp(stream).await {
+            if let Err(e) = handle_smtp(stream, domain).await {
                 eprintln!("Error handling tcp stream: {}", e);
             }
         });
     }
 }
-
-// Rest of your smtp.rs code remains the same
 
 struct EmailContent {
     pub buffer: [u8; 1024],
@@ -44,10 +44,11 @@ impl Default for EmailContent {
 
 async fn handle_smtp(
     mut stream: TcpStream,
+    domain: String,
 ) -> Result<(), Box<dyn Error>> {
     let mut content = EmailContent::default();
 
-    if let Err(e) = stream.write_all(b"220 smtp server").await {
+    if let Err(e) = stream.write_all(format!("220 {} SMTP Ready\r\n", domain).as_bytes()).await {
         eprintln!("Error sending message: {}", e);
         return Err(Box::new(e));
     }
@@ -64,13 +65,13 @@ async fn handle_smtp(
 
         match requests_caps.trim() {
             command if command.starts_with("HELO") || command.starts_with("EHLO") => {
-                if let Err(e) = stream.write_all(b"250 Hello").await {
+                if let Err(e) = stream.write_all(format!("250 {} Hello\r\n", domain).as_bytes()).await {
                     eprintln!("Error handling TcpStream: {}", e);
                     break;
                 }
             }
             _ => {
-                if let Err(e) = stream.write_all(b"250 Unkown Command").await {
+                if let Err(e) = stream.write_all(b"250 Unknown Command\r\n").await {
                     eprintln!("Error handling TcpStream: {}", e);
                     break;
                 }
