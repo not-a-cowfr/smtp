@@ -62,8 +62,8 @@ struct EmailContent {
     pub buffer: [u8; 1024],
     pub reset_state: bool,
     pub sender: String,
-    pub reciever: String,
-    pub data: Vec<u8>,
+    pub recievers: Vec<String>,
+    pub data: String,
 }
 
 impl Default for EmailContent {
@@ -72,8 +72,8 @@ impl Default for EmailContent {
             buffer: [0; 1024],
             reset_state: false,
             sender: String::new(),
-            reciever: String::new(),
-            data: Vec::new(),
+            recievers: Vec::new(),
+            data: String::new(),
         }
     }
 }
@@ -94,7 +94,7 @@ async fn handle_smtp(mut stream: TcpStream, domain: String) -> Result<(), Box<dy
     'conn: loop {
         let n = match stream.read(&mut content.buffer).await {
             Ok(n) if n > 0 => n,
-            _ => break,
+            _ => break 'conn,
         };
 
         let request = String::from_utf8_lossy(&content.buffer[..n]).to_string();
@@ -119,6 +119,12 @@ async fn handle_smtp(mut stream: TcpStream, domain: String) -> Result<(), Box<dy
 
             let args = parts.next().unwrap_or("");
 
+            match current_state {
+                SmtpState::MAIL => content.sender = args.replace("FROM:", ""),
+                SmtpState::RCPT => content.recievers.push(args.replace("TO:", "")),
+                _ => {}
+            }
+
             stream.respond(&current_state).await;
 
             if current_state == SmtpState::QUIT {
@@ -132,6 +138,10 @@ async fn handle_smtp(mut stream: TcpStream, domain: String) -> Result<(), Box<dy
             data.push_str(&request);
         }
     }
+
+    data.truncate(data.len() - 3);
+    content.data = data;
+
     Ok(())
 }
 
@@ -151,6 +161,8 @@ trait Respond {
     async fn respond<'a>(&mut self, state: &SmtpState);
 }
 
+const OK_RESPONSE: &str = "250 Ok";
+
 impl Respond for TcpStream {
     async fn respond<'a>(&mut self, state: &SmtpState) {
         let response = match state {
@@ -159,11 +171,9 @@ impl Respond for TcpStream {
                 BIND_ADDRESS.get().unwrap(),
                 PORT.get().unwrap()
             ),
-            SmtpState::MAIL => "250 Ok",
-            SmtpState::RCPT => "250 Ok",
             SmtpState::DATA => "354 End data with <CR><LF>.<CR><LF>",
-            SmtpState::POST_DATA => "250 Ok: queued as 1", // todo: add actual queue counting
             SmtpState::QUIT => "221 Bye",
+            _ => OK_RESPONSE,
         };
 
         self.write_all(format!("{}\r\n", response).as_bytes())
