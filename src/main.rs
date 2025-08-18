@@ -6,5 +6,7 @@ async fn main() {
         if let Err(e) = smtp::start_smtp().await {
             eprintln!("Error starting smtp server: {}", e)
         }
-    });
+    })
+    .await
+    .unwrap();
 }
