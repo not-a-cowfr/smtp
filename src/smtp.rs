@@ -1,5 +1,8 @@
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::{TcpListener, TcpStream}};
 use std::{env::var, error::Error};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::{TcpListener, TcpStream},
+};
 
 pub async fn start_smtp() -> Result<(), Box<dyn Error>> {
     let bind_address = var("BIND_ADDRESS").unwrap_or("0.0.0.0".to_string());
@@ -42,13 +45,13 @@ impl Default for EmailContent {
     }
 }
 
-async fn handle_smtp(
-    mut stream: TcpStream,
-    domain: String,
-) -> Result<(), Box<dyn Error>> {
+async fn handle_smtp(mut stream: TcpStream, domain: String) -> Result<(), Box<dyn Error>> {
     let mut content = EmailContent::default();
 
-    if let Err(e) = stream.write_all(format!("220 {} SMTP Ready\r\n", domain).as_bytes()).await {
+    if let Err(e) = stream
+        .write_all(format!("220 {} SMTP Ready\r\n", domain).as_bytes())
+        .await
+    {
         eprintln!("Error sending message: {}", e);
         return Err(Box::new(e));
     }
@@ -65,7 +68,10 @@ async fn handle_smtp(
 
         match requests_caps.trim() {
             command if command.starts_with("HELO") || command.starts_with("EHLO") => {
-                if let Err(e) = stream.write_all(format!("250 {} Hello\r\n", domain).as_bytes()).await {
+                if let Err(e) = stream
+                    .write_all(format!("250 {} Hello\r\n", domain).as_bytes())
+                    .await
+                {
                     eprintln!("Error handling TcpStream: {}", e);
                     break;
                 }
