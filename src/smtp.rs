@@ -1,20 +1,27 @@
+use std::str::FromStr;
 use std::{env::var, error::Error};
+use tokio::sync::OnceCell;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream},
 };
 
+static BIND_ADDRESS: OnceCell<String> = OnceCell::const_new();
+static PORT: OnceCell<String> = OnceCell::const_new();
+
 pub async fn start_smtp() -> Result<(), Box<dyn Error>> {
     let bind_address = var("BIND_ADDRESS").unwrap_or("0.0.0.0".to_string());
+    BIND_ADDRESS.set(bind_address.clone()).unwrap();
     let smtp_port = var("PORT").unwrap_or("2525".to_string());
+    PORT.set(smtp_port.clone()).unwrap();
     // let smtp_domain = var("SMTP_DOMAIN").unwrap_or("smtp.notacow.fr".to_string());
 
     let listener = TcpListener::bind(format!("{}:{}", bind_address, smtp_port)).await?;
-    println!("Starting smtp server at {}:{}", bind_address, smtp_port);
+    tracing::info!("Starting smtp server at {}:{}", bind_address, smtp_port);
 
     loop {
         let (stream, addr) = listener.accept().await?;
-        println!("New connection from: {}", addr);
+        tracing::info!("New connection from: {}", addr);
 
         let add = bind_address.clone();
         let port = smtp_port.clone();
@@ -23,6 +30,31 @@ pub async fn start_smtp() -> Result<(), Box<dyn Error>> {
                 .await
                 .log_error();
         });
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum SmtpState {
+    GREET,
+    MAIL,
+    RCPT,
+    DATA,
+    POST_DATA,
+    QUIT,
+}
+
+impl FromStr for SmtpState {
+    type Err = ();
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "HELO" | "EHLO" => Ok(SmtpState::GREET),
+            "MAIL" => Ok(SmtpState::MAIL),
+            "RCPT" => Ok(SmtpState::RCPT),
+            "DATA" => Ok(SmtpState::DATA),
+            "QUIT" => Ok(SmtpState::QUIT),
+            _ => Err(()),
+        }
     }
 }
 
@@ -57,47 +89,47 @@ async fn handle_smtp(mut stream: TcpStream, domain: String) -> Result<(), Box<dy
         return Err(Box::new(e));
     }
 
-    loop {
+    let mut current_state: SmtpState = SmtpState::QUIT;
+    let mut data = String::new();
+    'conn: loop {
         let n = match stream.read(&mut content.buffer).await {
             Ok(n) if n > 0 => n,
             _ => break,
         };
 
         let request = String::from_utf8_lossy(&content.buffer[..n]).to_string();
-        let requests_caps = request.to_uppercase();
-        println!("Recieved command: {}", requests_caps.trim());
+        let mut parts = request.trim().splitn(2, ' ');
+        let command_str = parts.next().unwrap_or("").to_uppercase();
 
-        match requests_caps.trim() {
-            command if command.starts_with("HELO") || command.starts_with("EHLO") => {
-                stream
-                    .write_all(format!("250 {} Hello\r\n", domain).as_bytes())
-                    .await
-                    .log_error();
+        if current_state != SmtpState::DATA {
+            tracing::debug!("Recieved command: {:?}", command_str);
+
+            match command_str.parse::<SmtpState>() {
+                Ok(cmd) => {
+                    current_state = cmd;
+                }
+                Err(_) => {
+                    stream
+                        .write_all(b"500 Unknown command\r\n")
+                        .await
+                        .log_error();
+                    continue 'conn;
+                }
+            };
+
+            let args = parts.next().unwrap_or("");
+
+            stream.respond(&current_state).await;
+
+            if current_state == SmtpState::QUIT {
+                break 'conn;
             }
-            command if command.starts_with("MAIL") || command.starts_with("RCPT") => {
-                stream.write_all(b"250 Ok\r\n").await.log_error();
+        } else {
+            if request.ends_with(".\r\n") {
+                current_state = SmtpState::POST_DATA;
+                stream.respond(&current_state).await;
             }
-            command if command.starts_with("DATA") => {
-                stream
-                    .write_all(b"354 End data with <CR><LF>.<CR><LF>")
-                    .await
-                    .log_error();
-            }
-            "." => {
-                stream
-                    .write_all(b"250 Ok: queued as 12345")
-                    .await
-                    .log_error();
-            }
-            command if command.starts_with("QUIT") => {
-                stream.write_all(b"221 Bye").await.log_error();
-            }
-            _ => {
-                stream
-                    .write_all(b"250 Unknown Command\r\n")
-                    .await
-                    .log_error();
-            }
+            data.push_str(&request);
         }
     }
     Ok(())
@@ -110,7 +142,32 @@ trait Log<T> {
 impl<T, E: std::fmt::Debug> Log<T> for Result<T, E> {
     fn log_error(&self) {
         if let Err(e) = self {
-            eprintln!("Error handling TcpStream: {:?}", e);
+            tracing::error!("Error handling TcpStream: {:?}", e);
         }
+    }
+}
+
+trait Respond {
+    async fn respond<'a>(&mut self, state: &SmtpState);
+}
+
+impl Respond for TcpStream {
+    async fn respond<'a>(&mut self, state: &SmtpState) {
+        let response = match state {
+            SmtpState::GREET => &format!(
+                "250 {}:{} Hello",
+                BIND_ADDRESS.get().unwrap(),
+                PORT.get().unwrap()
+            ),
+            SmtpState::MAIL => "250 Ok",
+            SmtpState::RCPT => "250 Ok",
+            SmtpState::DATA => "354 End data with <CR><LF>.<CR><LF>",
+            SmtpState::POST_DATA => "250 Ok: queued as 1", // todo: add actual queue counting
+            SmtpState::QUIT => "221 Bye",
+        };
+
+        self.write_all(format!("{}\r\n", response).as_bytes())
+            .await
+            .log_error();
     }
 }
