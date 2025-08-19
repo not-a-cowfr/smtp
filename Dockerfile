@@ -9,6 +9,7 @@ COPY --from=builder /usr/src/app/target/release/smtp /usr/local/bin/app
 
 ENV BIND_ADDRESS=0.0.0.0
 ENV PORT=2525
+ENV DOMAIN=mail.notacow.fr
 EXPOSE 2525
 
 CMD ["app"]

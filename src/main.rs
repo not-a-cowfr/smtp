@@ -1,10 +1,14 @@
 #![allow(non_camel_case_types)]
 
+use dotenv::dotenv;
 use tracing::Level;
+
 mod smtp;
 
 #[tokio::main]
 async fn main() {
+    dotenv().ok();
+
     #[cfg(debug_assertions)]
     tracing_subscriber::fmt()
         .with_max_level(Level::DEBUG)

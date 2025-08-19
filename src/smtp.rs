@@ -10,25 +10,31 @@ static BIND_ADDRESS: OnceCell<String> = OnceCell::const_new();
 static PORT: OnceCell<String> = OnceCell::const_new();
 
 pub async fn start_smtp() -> Result<(), Box<dyn Error>> {
-    let bind_address = var("BIND_ADDRESS").unwrap_or("0.0.0.0".to_string());
-    BIND_ADDRESS.set(bind_address.clone()).unwrap();
-    let smtp_port = var("PORT").unwrap_or("2525".to_string());
-    PORT.set(smtp_port.clone()).unwrap();
-    // let smtp_domain = var("SMTP_DOMAIN").unwrap_or("smtp.notacow.fr".to_string());
+    let bind_address = var("BIND_ADDRESS").unwrap();
+    let port = var("PORT").unwrap();
 
-    let listener = TcpListener::bind(format!("{}:{}", bind_address, smtp_port)).await?;
-    tracing::info!("Starting smtp server at {}:{}", bind_address, smtp_port);
+    #[cfg(not(debug_assertions))]
+    let domain = var("DOMAIN");
+
+    BIND_ADDRESS.set(bind_address.clone()).unwrap();
+    PORT.set(port.clone()).unwrap();
+
+    let addr = format!("{}:{}", bind_address, port);
+    let listener = TcpListener::bind(&addr).await?;
+    tracing::info!("Starting SMTP server at {}", addr);
 
     loop {
-        let (stream, addr) = listener.accept().await?;
-        tracing::info!("New connection from: {}", addr);
+        let (stream, client_addr) = listener.accept().await?;
+        tracing::info!("New connection from: {}", client_addr);
 
-        let add = bind_address.clone();
-        let port = smtp_port.clone();
-        tokio::spawn(async move {
-            handle_smtp(stream, format!("{}:{}", add, port))
-                .await
-                .log_error();
+        #[cfg(debug_assertions)]
+        let greeting = addr.clone();
+
+        #[cfg(not(debug_assertions))]
+        let greeting = domain.clone().unwrap_or_else(|_| addr.clone());
+
+        tokio::task::spawn(async move {
+            handle_smtp(stream, greeting).await.log_error();
         });
     }
 }
